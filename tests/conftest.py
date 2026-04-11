@@ -1,7 +1,5 @@
 import pytest
-from pathlib import Path
-from vvnext.inventory import Inventory, ServerEntry, Defaults, load_inventory
-from vvnext.settings import Settings, load_settings
+from vvnext.inventory import Inventory
 
 @pytest.fixture
 def sample_inventory_data():

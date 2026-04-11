@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
-    from vvnext.inventory import Inventory, ServerEntry, Defaults
+    from vvnext.inventory import Inventory, ServerEntry
     from vvnext.settings import Settings
     from vvnext.ssh import SshClient
 

@@ -1,6 +1,6 @@
-import pytest, json
-from vvnext.config_generator import build_near_config, build_far_config, build_manifest, build_client_nodes
-from vvnext.inventory import Inventory
+import pytest
+import json
+from vvnext.config_generator import build_near_config, build_far_config, build_manifest
 from vvnext.overlay import compute_topology
 from vvnext.state import State
 

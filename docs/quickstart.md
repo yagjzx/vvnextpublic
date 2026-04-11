@@ -222,12 +222,13 @@ Expected output:
 ```
 Running health checks...
 
-6/6 checks passed
+7/7 checks passed
   [OK] hk-gcp-a | tcp | 1.2.3.4:20001 | port open
   [OK] hk-gcp-a | tcp | 1.2.3.4:20002 | port open
   [OK] hk-gcp-a | udp | 1.2.3.4:443 | no response (normal for UDP)
   [OK] hk-gcp-a | tcp | 1.2.3.4:2053 | port open
   [OK] hk-gcp-a | tcp | 1.2.3.4:8443 | port open
+  [OK] hk-gcp-a | tcp | 1.2.3.4:8444 | port open
   [OK] us-gcp-a | udp | 5.6.7.8:51941 | no response (normal for UDP)
 
 All checks passed.

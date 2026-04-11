@@ -1,15 +1,12 @@
-import pytest
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from vvnext.inventory import Inventory, ServerEntry
-from vvnext.settings import Settings
+from vvnext.inventory import ServerEntry
 from vvnext.ssh import SshClient
 from vvnext.audit import (
     AuditFinding,
     AuditReport,
     audit_config_drift,
-    audit_security,
     _check_ssh_password_auth,
     _check_ufw_status,
     _check_fail2ban,

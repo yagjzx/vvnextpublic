@@ -1,5 +1,3 @@
-import pytest
-from pathlib import Path
 from vvnext.state import State, WgNodeAllocation, WgPeerAllocation, load_state, save_state
 
 def test_empty_state():

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from vvnext.ssh import SshClient
-from vvnext.inventory import ServerEntry, Inventory, Defaults
+from vvnext.inventory import ServerEntry, Inventory
 from vvnext.settings import Settings
 
 

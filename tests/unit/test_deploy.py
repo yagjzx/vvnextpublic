@@ -1,9 +1,7 @@
 """Tests for deploy.py -- all SSH calls mocked."""
 
-import json
-import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch, ANY
+from unittest.mock import MagicMock, patch
 
 from vvnext.deploy import (
     deploy_node,
@@ -12,7 +10,6 @@ from vvnext.deploy import (
     _validate_remote,
     _backup_current,
     _atomic_replace,
-    _restart_singbox,
     _rollback,
     _upload_cdn_cert,
     _TMP_CONFIG_PATH,
@@ -271,7 +268,7 @@ class TestDeployFleetParallelLimit:
         mock_executor.submit.side_effect = [mock_future_a, mock_future_b, mock_future_c]
 
         with patch("vvnext.deploy.as_completed", return_value=[mock_future_a, mock_future_b, mock_future_c]):
-            results = deploy_fleet(inventory, configs, settings, max_parallel=2)
+            deploy_fleet(inventory, configs, settings, max_parallel=2)
 
         # Verify ThreadPoolExecutor was created with max_workers=2
         mock_executor_cls.assert_called_once_with(max_workers=2)
@@ -300,7 +297,7 @@ class TestDeployFleetParallelLimit:
         mock_executor.submit.return_value = mock_future
 
         with patch("vvnext.deploy.as_completed", return_value=[mock_future]):
-            results = deploy_fleet(
+            deploy_fleet(
                 inventory, configs, settings, targets=["hk-gcp-a"]
             )
 

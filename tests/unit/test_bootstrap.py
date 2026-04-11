@@ -1,17 +1,13 @@
 """Tests for bootstrap.py -- all SSH calls mocked."""
 
-import pytest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
 from vvnext.bootstrap import (
     bootstrap_node,
     _create_service_user,
-    _install_packages,
     _tune_sysctl,
     _install_singbox,
-    _install_wireguard,
     _setup_ufw,
-    _install_fail2ban,
     _generate_self_signed_cert,
     _setup_wg_mss_clamp,
 )

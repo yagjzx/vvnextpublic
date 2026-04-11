@@ -1,5 +1,9 @@
 # VVNext
 
+[![CI](https://github.com/yagjzx/vvnextpublic/actions/workflows/ci.yml/badge.svg)](https://github.com/yagjzx/vvnextpublic/actions)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
+
 **Open-source sing-box fleet management CLI for multi-node proxy networks.**
 
 VVNext automates the full lifecycle of a sing-box proxy fleet: provisioning, config generation, deployment, subscription distribution, health monitoring, and security auditing. It targets IT teams at 100--1000 user organizations that need reliable, multi-hop proxy infrastructure with geographic diversity.
@@ -139,10 +143,14 @@ src/vvnext/
   subscription/
     builder.py              # Subscription orchestrator
     classifier.py           # Proxy group bucket classifier
+    server.py               # HTTPS subscription server
     formats/
       mihomo.py             # Mihomo/Clash YAML output
       shadowrocket.py       # Shadowrocket base64 output
       singbox.py            # sing-box/Hiddify JSON output
+tests/
+  unit/                     # 214 unit tests
+  integration/              # 4 integration tests (full pipeline)
 ```
 
 ## Configuration
@@ -209,6 +217,25 @@ alerting:
 - [Architecture](docs/architecture.md) -- system layers, protocol matrix, data flow
 - [Quick Start Guide](docs/quickstart.md) -- step-by-step first deployment
 - [Advanced Topics](docs/advanced.md) -- residential nodes, monitoring, troubleshooting
+
+## Development
+
+```bash
+# Clone and set up
+git clone https://github.com/yagjzx/vvnextpublic.git
+cd vvnextpublic
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Run tests (231 tests, ~1s)
+pytest
+
+# Run linter
+ruff check src/ tests/
+
+# Run with coverage
+pytest --cov=vvnext --cov-report=term-missing
+```
 
 ## Contributing
 

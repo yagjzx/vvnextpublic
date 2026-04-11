@@ -2,16 +2,12 @@
 
 import json
 import yaml
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-from vvnext.inventory import Inventory, load_inventory
-from vvnext.settings import Settings
+from vvnext.inventory import Inventory
 from vvnext.state import State, load_state, save_state
-from vvnext.keys import generate_wg_keypair, generate_uuid
+from vvnext.keys import generate_wg_keypair
 from vvnext.overlay import compute_topology
 from vvnext.config_generator import build_near_config, build_far_config, build_manifest, build_client_nodes
 from vvnext.subscription.builder import build_all_subscriptions
-from vvnext.subscription.classifier import classify_nodes, build_proxy_groups
 
 def _make_materials(inventory):
     """Create mock materials dict for testing (no sing-box binary needed)."""
@@ -40,7 +36,6 @@ def test_full_pipeline(sample_inventory, tmp_path):
 
     Tests that all modules work together end-to-end.
     """
-    settings = Settings(domain="test.example.com")
     state = State()
 
     # Step 1: Compute WG topology
@@ -109,7 +104,6 @@ def test_full_pipeline(sample_inventory, tmp_path):
 
 def test_render_idempotency(sample_inventory, tmp_path):
     """Render twice with same inputs -- results must be identical."""
-    settings = Settings(domain="test.example.com")
     state = State()
     topo, state = compute_topology(sample_inventory, state)
     materials = _make_materials(sample_inventory)

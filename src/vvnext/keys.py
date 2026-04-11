@@ -1,5 +1,8 @@
 from __future__ import annotations
-import json, secrets, subprocess, uuid
+import json
+import secrets
+import subprocess
+import uuid
 from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives import serialization

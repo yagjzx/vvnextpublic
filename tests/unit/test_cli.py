@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import yaml
-import pytest
 from typer.testing import CliRunner
 from vvnext.cli import app
 

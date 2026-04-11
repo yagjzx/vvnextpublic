@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from vvnext.ssh import SshClient
-from vvnext.inventory import Inventory, ServerEntry, Defaults
+from vvnext.inventory import Inventory, ServerEntry
 from vvnext.settings import Settings
 
 

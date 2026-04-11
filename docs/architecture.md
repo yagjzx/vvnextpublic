@@ -53,6 +53,7 @@ Near nodes accept client connections and serve as the ingress point for all traf
 | Hysteria2+Salamander | 443 | UDP | Low-latency, QUIC-based, direct exit |
 | VLESS+WS+CDN | 2053 | TCP/WS | CDN-fronted, passes through Cloudflare |
 | AnyTLS | 8443 | TCP | Mimics standard TLS, direct exit |
+| AnyTLS (direct) | 8444 | TCP | AnyTLS direct inbound |
 
 **Key property**: Near nodes hold Reality keypairs, HY2 ACME certs, and WG private keys for outbound tunnels.
 
@@ -107,6 +108,7 @@ Near Node: hk-gcp-a (port_base = 20000)
   Port 443   -> direct exit (HK IP)                 # HY2
   Port 2053  -> direct exit (HK IP)                 # CDN
   Port 8443  -> direct exit (HK IP)                 # AnyTLS
+  Port 8444  -> direct exit (HK IP)                 # AnyTLS direct
 ```
 
 The client's subscription contains one proxy entry per port. The client app (Mihomo, Shadowrocket) selects which proxy to use, which implicitly selects the exit country.

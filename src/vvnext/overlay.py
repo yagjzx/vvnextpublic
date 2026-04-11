@@ -1,5 +1,5 @@
 from __future__ import annotations
-from vvnext.inventory import Inventory, ServerEntry
+from vvnext.inventory import Inventory
 from vvnext.state import State, WgNodeAllocation, WgPeerAllocation
 
 def compute_topology(

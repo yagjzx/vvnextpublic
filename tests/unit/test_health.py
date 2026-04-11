@@ -1,9 +1,7 @@
 import socket
-import ssl
 import datetime
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock
 
-import pytest
 
 from vvnext.health import (
     check_tcp,
@@ -162,7 +160,7 @@ def test_tls_expiry_expired():
 
 def test_tls_expiry_connection_error():
     """TLS connection fails -> ok=False"""
-    with patch("vvnext.health.ssl.create_default_context") as mock_ctx_fn, \
+    with patch("vvnext.health.ssl.create_default_context") as _, \
          patch("vvnext.health.socket.create_connection",
                side_effect=socket.timeout("timed out")):
         result = check_tls_expiry("1.2.3.4", 20001)
@@ -414,7 +412,7 @@ def test_fleet_check_residential_uses_tailscale(mock_tcp, mock_udp, mock_tls):
     mock_tls.return_value = CheckResult(node="", check_type="tls_expiry",
                                         target="", ok=True)
 
-    report = check_fleet(inv, settings)
+    check_fleet(inv, settings)
 
     # Find the UDP calls for far/residential nodes
     udp_calls = mock_udp.call_args_list

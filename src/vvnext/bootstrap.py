@@ -6,7 +6,6 @@ and China mainland VPS.
 
 from __future__ import annotations
 
-import json
 from vvnext.ssh import SshClient
 from vvnext.inventory import ServerEntry
 from vvnext.settings import Settings

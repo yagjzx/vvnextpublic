@@ -1,8 +1,8 @@
 from __future__ import annotations
-import os, yaml
+import os
+import yaml
 from pathlib import Path
 from pydantic import BaseModel, model_validator
-from typing import Optional
 
 class SshSettings(BaseModel):
     user: str = "root"

@@ -1,7 +1,6 @@
-import pytest, json, uuid, re, base64
+import uuid
 from unittest.mock import patch, MagicMock
-from vvnext.keys import generate_reality_keypair, generate_wg_keypair, generate_uuid, generate_hy2_secrets, generate_anytls_password, generate_all_materials
-from pathlib import Path
+from vvnext.keys import generate_reality_keypair, generate_wg_keypair, generate_uuid, generate_hy2_secrets, generate_anytls_password
 
 def test_reality_keypair_format():
     with patch("subprocess.run") as mock_run:

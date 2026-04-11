@@ -1,4 +1,3 @@
-import pytest
 from vvnext.overlay import compute_topology
 from vvnext.inventory import Inventory
 from vvnext.state import State

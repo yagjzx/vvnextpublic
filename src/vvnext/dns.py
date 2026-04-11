@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import httpx
-from vvnext.inventory import Inventory, ServerEntry
+from vvnext.inventory import Inventory
 from vvnext.settings import Settings
 
 CF_API_BASE = "https://api.cloudflare.com/client/v4"

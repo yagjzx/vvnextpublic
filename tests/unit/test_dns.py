@@ -1,6 +1,5 @@
 import pytest
 from unittest.mock import patch, MagicMock
-import httpx
 
 from vvnext.inventory import Inventory
 from vvnext.settings import Settings
@@ -8,8 +7,6 @@ from vvnext.dns import (
     build_dns_plan,
     format_manual_instructions,
     upsert_dns_records,
-    _get_zone_id,
-    _cf_headers,
 )
 
 

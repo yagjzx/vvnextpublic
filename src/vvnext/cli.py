@@ -14,7 +14,6 @@ Commands:
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -154,7 +153,7 @@ def init(
 
         typer.echo(f"Running init from config: {config}")
         try:
-            init_data = yaml.safe_load(config.read_text())
+            yaml.safe_load(config.read_text())
         except Exception as exc:
             typer.echo(
                 typer.style(f"Error reading config: {exc}", fg=typer.colors.RED),
@@ -249,7 +248,7 @@ def _format_ports(node, defaults) -> str:
     if node.role == "near":
         if node.port_base is not None:
             parts.append(f"reality:{node.port_base + 1}")
-        parts.append(f"hy2:443")
+        parts.append("hy2:443")
         parts.append(f"cdn:{defaults.near.cdn_port}")
         parts.append(f"anytls:{defaults.near.anytls_port}")
     elif node.wg_port is not None:
@@ -328,7 +327,6 @@ def add_node(
     existing_names = {s.name for s in inv.servers}
     suffix = "a"
     while True:
-        candidate = f"{region}-{suffix}"
         # Try to find a unique name
         name_candidate = f"{region}-new-{suffix}"
         if name_candidate not in existing_names:
@@ -569,7 +567,7 @@ def sub_rebuild(
 ) -> None:
     """Rebuild subscription files."""
     inv = _load_inventory_or_exit(inventory)
-    settings = _load_settings_or_exit(settings_path)
+    _load_settings_or_exit(settings_path)
 
     from vvnext.subscription.builder import build_all_subscriptions
 
@@ -836,7 +834,7 @@ def keys_rotate(
 
     typer.echo("Regenerating key materials...")
     try:
-        materials = generate_all_materials(inv, materials_dir)
+        generate_all_materials(inv, materials_dir)
     except Exception as exc:
         typer.echo(
             typer.style(f"Key rotation failed: {exc}", fg=typer.colors.RED),

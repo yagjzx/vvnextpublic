@@ -1,4 +1,3 @@
-import pytest
 from vvnext.subscription.classifier import classify_nodes, build_proxy_groups
 
 

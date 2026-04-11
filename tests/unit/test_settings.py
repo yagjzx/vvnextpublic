@@ -1,6 +1,3 @@
-import pytest
-import os
-from pathlib import Path
 from vvnext.settings import Settings, load_settings
 
 def test_default_settings():

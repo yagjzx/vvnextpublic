@@ -27,9 +27,6 @@ def build_near_config(
     # Collect WG peers for this near node
     peers = _get_ordered_peers(node, inventory, topo)
 
-    # Reality keypair for this node
-    reality = materials.get("reality", {}).get(node.name, {})
-
     # --- Overlay inbounds (port_base+1, +3, +4, +5, ...) ---
     overlay_inbound_tags: list[str] = []
     for i, (far_name, alloc) in enumerate(peers):

@@ -6,7 +6,6 @@ from vvnext.subscription.formats.mihomo import (
     dump_mihomo_yaml,
     _needs_quoting,
 )
-from vvnext.subscription.classifier import classify_nodes, build_proxy_groups
 from vvnext.subscription.builder import build_all_subscriptions
 
 
