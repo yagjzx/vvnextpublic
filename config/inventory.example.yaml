@@ -1,0 +1,49 @@
+# VVNext Node Inventory
+# Copy this file to inventory.yaml and customize
+# This is the single source of truth for your proxy fleet
+
+defaults:
+  runtime: singbox
+  ssh_user: root
+
+servers:
+  # Near-ingress node (accepts client connections, located near users)
+  - name: hk-gcp-a
+    role: near                # near | far | residential
+    region: hk                # hk | jp | tw | us | sg | ...
+    provider: gcp             # gcp | aws | do | dmit | akile | home | ...
+    public_ip: "1.2.3.4"
+    port_base: 20000          # VLESS Reality ports: overlay=+1, direct=+2, etc.
+    sni: "dl.google.com"      # Reality SNI target
+    hy2_sni: "hk.example.com" # HY2 SNI
+    cdn_domain: "hk-cdn.example.com"  # CDN domain (Cloudflare proxied)
+    dns_name: "hk-a.example.com"      # DNS A record
+    protocols: [vless_reality, hysteria2, vless_ws_cdn, anytls]
+    wg_peers: [us-gcp-a]     # Far nodes reachable via WG overlay
+
+  # Far-egress node (provides exit IP, located in target country)
+  - name: us-gcp-a
+    role: far
+    region: us
+    provider: gcp
+    public_ip: "5.6.7.8"
+    wg_port: 51941            # WireGuard listen port (auto-assigned if omitted)
+
+  # Residential node (home connection, behind NAT, accessed via Tailscale)
+  - name: us-home-att2
+    role: residential
+    region: us
+    provider: home
+    public_ip: "9.10.11.12"
+    tailscale_ip: "100.72.95.46"  # Required for residential nodes
+    ssh_target: tailscale          # SSH via Tailscale IP
+    wg_port: 51943
+    nat: true
+
+  # Future node (planned, skip validation)
+  - name: sg-do-a
+    role: near
+    region: sg
+    provider: do
+    public_ip: "0.0.0.0"
+    phase: future             # "future" nodes skip field validation

@@ -1,3 +1,9 @@
+# VVNext project-specific
+rendered/
+state.yaml
+config/settings.yaml
+config/inventory.yaml
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

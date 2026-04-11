@@ -1,0 +1,20 @@
+# Domain-based routing rules
+# These rules determine how traffic is routed through the proxy network
+
+server_routing:
+  ai_residential:
+    domains: [openai.com, anthropic.com, claude.ai, claude.com, cursor.sh, gemini.google.com]
+    preferred_exit: residential
+    fallback_exit: far
+  streaming_us:
+    domains: [netflix.com, disneyplus.com, hulu.com, hbomax.com]
+    preferred_exit: far
+  streaming_hk:
+    domains: [bilibili.com]
+    preferred_exit: near
+  us_exclusive:
+    domains: [linkedin.com, irs.gov]
+    preferred_exit: far
+  direct_cn:
+    domains: [baidu.com, qq.com, taobao.com, jd.com, weibo.com]
+    action: direct

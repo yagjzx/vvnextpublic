@@ -1,0 +1,43 @@
+# VVNext Global Settings
+# Copy this file to settings.yaml and customize
+
+project_name: "MyProxy"
+domain: "example.com"
+
+ssh:
+  user: "root"
+  key_path: "~/.ssh/id_ed25519"
+  timeout: 30
+
+dns:
+  provider: "cloudflare"     # cloudflare | manual
+  cf_api_token: ""           # override via VVNEXT_CF_TOKEN env var
+
+subscription:
+  port: 8443
+  tls_cert: ""               # path to TLS cert; if empty, uses self-signed
+  tls_key: ""                # path to TLS key
+  formats: [mihomo, shadowrocket, singbox]
+  token: ""                  # subscription URL auth token (prevents crawling)
+
+alerting:
+  telegram:
+    enabled: false
+    bot_token: ""             # override via VVNEXT_TG_TOKEN env var
+    chat_id: ""
+
+protocols:
+  vless_reality: true
+  hysteria2: true
+  vless_ws_cdn: true
+  anytls: true
+
+bootstrap:
+  mirror: ""                 # sing-box download mirror URL (for China mainland)
+
+monitoring:
+  influxdb:
+    enabled: false
+    url: ""
+    org: ""
+    bucket: ""
