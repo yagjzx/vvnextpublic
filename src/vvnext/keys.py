@@ -48,6 +48,36 @@ def generate_hy2_secrets() -> dict[str, str]:
 def generate_anytls_password() -> str:
     return secrets.token_urlsafe(32)
 
+def flatten_materials(raw: dict) -> dict:
+    """Convert generate_all_materials output to the flat format expected by config_generator.
+
+    config_generator expects::
+
+        materials["vless_uuid"]          -> str
+        materials["anytls_password"]     -> str
+        materials["hy2"]                 -> {password, obfs_password}
+        materials["reality"][node_id]    -> {private_key, public_key, short_id}
+        materials["wg"][node_id]         -> {private_key, public_key}
+        materials["wg_near"][node_id]    -> {private_key, public_key}
+    """
+    flat: dict = {
+        "vless_uuid": raw.get("vless_uuid", ""),
+        "anytls_password": raw.get("anytls_password", ""),
+        "hy2": raw.get("hy2_secrets", raw.get("hy2", {})),
+        "reality": {},
+        "wg": {},
+        "wg_near": {},
+    }
+    for node_id, node_data in raw.get("nodes", {}).items():
+        if "reality_keypair" in node_data:
+            flat["reality"][node_id] = node_data["reality_keypair"]
+            if "wg_keypair" in node_data:
+                flat["wg_near"][node_id] = node_data["wg_keypair"]
+        elif "wg_keypair" in node_data:
+            flat["wg"][node_id] = node_data["wg_keypair"]
+    return flat
+
+
 def generate_all_materials(inventory, materials_dir: Path) -> dict:
     """Generate all key materials for the fleet. Returns materials dict."""
     materials_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +112,11 @@ def generate_all_materials(inventory, materials_dir: Path) -> dict:
             if not reality_path.exists():
                 reality_path.write_text(json.dumps(generate_reality_keypair()))
             materials.setdefault("reality", {})[node.name] = json.loads(reality_path.read_text())
+            # Near nodes also need a WG keypair for the overlay tunnel
+            wg_near_path = node_dir / "wg-keypair.json"
+            if not wg_near_path.exists():
+                wg_near_path.write_text(json.dumps(generate_wg_keypair()))
+            materials.setdefault("wg_near", {})[node.name] = json.loads(wg_near_path.read_text())
         # WG keypair (far + residential nodes)
         if node.role in ("far", "residential") and node.wg_port:
             wg_path = node_dir / "wg-keypair.json"

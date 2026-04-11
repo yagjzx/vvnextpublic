@@ -1,6 +1,6 @@
 import uuid
 from unittest.mock import patch, MagicMock
-from vvnext.keys import generate_reality_keypair, generate_wg_keypair, generate_uuid, generate_hy2_secrets, generate_anytls_password
+from vvnext.keys import generate_reality_keypair, generate_wg_keypair, generate_uuid, generate_hy2_secrets, generate_anytls_password, flatten_materials
 
 def test_reality_keypair_format():
     with patch("subprocess.run") as mock_run:
@@ -35,3 +35,26 @@ def test_hy2_secrets():
 def test_anytls_password():
     p = generate_anytls_password()
     assert len(p) >= 24
+
+def test_flatten_materials():
+    """flatten_materials bridges generate_all_materials output to config_generator format."""
+    raw = {
+        "vless_uuid": "test-uuid",
+        "anytls_password": "test-pass",
+        "hy2_secrets": {"password": "pw", "obfs_password": "opw"},
+        "nodes": {
+            "hk-gcp-a": {
+                "reality_keypair": {"private_key": "rp", "public_key": "rpub", "short_id": "ab"},
+                "wg_keypair": {"private_key": "nwp", "public_key": "nwpub"},
+            },
+            "us-gcp-a": {
+                "wg_keypair": {"private_key": "fwp", "public_key": "fwpub"},
+            },
+        },
+    }
+    flat = flatten_materials(raw)
+    assert flat["vless_uuid"] == "test-uuid"
+    assert flat["reality"]["hk-gcp-a"]["private_key"] == "rp"
+    assert flat["wg_near"]["hk-gcp-a"]["private_key"] == "nwp"
+    assert flat["wg"]["us-gcp-a"]["private_key"] == "fwp"
+    assert flat["hy2"]["password"] == "pw"

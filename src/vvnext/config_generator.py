@@ -23,6 +23,7 @@ def build_near_config(
     inbounds: list[dict] = []
     outbounds: list[dict] = []
     route_rules: list[dict] = [{"action": "sniff"}]
+    endpoints: list[dict] = []
 
     # Collect WG peers for this near node
     peers = _get_ordered_peers(node, inventory, topo)
@@ -38,10 +39,10 @@ def build_near_config(
         )
         overlay_inbound_tags.append(tag)
 
-        # WG outbound for this peer
+        # WG endpoint for this peer (sing-box 1.13+)
         far_node = inventory.get_node(far_name)
-        outbounds.append(
-            _build_wg_outbound(node.name, far_name, alloc, materials, far_node)
+        endpoints.append(
+            _build_wg_endpoint(node.name, far_name, alloc, materials, far_node)
         )
         # Route: overlay inbound -> specific WG outbound
         route_rules.append({
@@ -80,9 +81,8 @@ def build_near_config(
     # --- Standard outbounds ---
     outbounds.append(_build_direct_outbound())
     outbounds.append(_build_block_outbound())
-    outbounds.append(_build_dns_outbound())
 
-    return {
+    config: dict = {
         "log": {"level": "warn", "timestamp": True},
         "dns": _build_dns(),
         "inbounds": inbounds,
@@ -92,6 +92,9 @@ def build_near_config(
             "final": "direct",
         },
     }
+    if endpoints:
+        config["endpoints"] = endpoints
+    return config
 
 
 def build_far_config(
@@ -102,7 +105,6 @@ def build_far_config(
     defaults: Defaults,
 ) -> dict:
     """Build complete sing-box JSON config for a far node."""
-    inbounds: list[dict] = []
     outbounds: list[dict] = []
 
     # Collect all near nodes that peer with this far node
@@ -111,25 +113,27 @@ def build_far_config(
         if far_name == node.name:
             near_peers.append((near_name, alloc))
 
+    endpoints: list[dict] = []
     if near_peers:
-        inbounds.append(
-            _build_far_wg_inbound(node, near_peers, materials, inventory)
+        endpoints.append(
+            _build_far_wg_endpoint(node, near_peers, materials, inventory)
         )
 
     outbounds.append(_build_direct_outbound())
     outbounds.append(_build_block_outbound())
-    outbounds.append(_build_dns_outbound())
 
-    return {
+    config: dict = {
         "log": {"level": "warn", "timestamp": True},
         "dns": _build_dns(),
-        "inbounds": inbounds,
         "outbounds": outbounds,
         "route": {
             "rules": [{"action": "sniff"}],
             "final": "direct",
         },
     }
+    if endpoints:
+        config["endpoints"] = endpoints
+    return config
 
 
 def build_manifest(
@@ -422,30 +426,30 @@ def _build_anytls_direct_inbound(node: ServerEntry, materials: dict) -> dict:
 # Internal: outbound builders
 # ---------------------------------------------------------------------------
 
-def _build_wg_outbound(
+def _build_wg_endpoint(
     near_name: str,
     far_name: str,
     alloc: dict,
     materials: dict,
     far_node: ServerEntry,
 ) -> dict:
-    """WireGuard outbound from near to a specific far node."""
+    """WireGuard endpoint from near to a specific far node (sing-box 1.13+ format)."""
     wg_far = materials.get("wg", {}).get(far_name, {})
-    wg_near = materials.get("wg", {}).get(near_name, {})
+    wg_near = materials.get("wg_near", {}).get(near_name, {})
     return {
         "type": "wireguard",
         "tag": f"wg-{far_name}",
-        "local_address": [f"{alloc['near_ip']}/30"],
+        "mtu": 1380,
+        "address": [f"{alloc['near_ip']}/30"],
         "private_key": wg_near.get("private_key", ""),
         "peers": [
             {
-                "server": far_node.public_ip,
-                "server_port": alloc["wg_port"],
                 "public_key": wg_far.get("public_key", ""),
+                "address": far_node.public_ip,
+                "port": alloc["wg_port"],
                 "allowed_ips": ["0.0.0.0/0"],
             }
         ],
-        "mtu": 1380,
     }
 
 
@@ -459,38 +463,40 @@ def _build_block_outbound() -> dict:
     return {"type": "block", "tag": "block"}
 
 
-def _build_dns_outbound() -> dict:
-    """DNS outbound."""
-    return {"type": "dns", "tag": "dns-out"}
-
-
 # ---------------------------------------------------------------------------
-# Internal: far node WG inbound
+# Internal: far node WG endpoint
 # ---------------------------------------------------------------------------
 
-def _build_far_wg_inbound(
+def _build_far_wg_endpoint(
     far_node: ServerEntry,
     near_peers: list[tuple[str, dict]],
     materials: dict,
     inventory: Inventory,
 ) -> dict:
-    """WireGuard inbound for a far node, with all near peers."""
+    """WireGuard endpoint for a far node (sing-box 1.13+ format)."""
     wg_far = materials.get("wg", {}).get(far_node.name, {})
     peers = []
+    addresses: list[str] = []
     for near_name, alloc in near_peers:
-        wg_near = materials.get("wg", {}).get(near_name, {})
+        wg_near = materials.get("wg_near", {}).get(near_name, {})
         peers.append({
             "public_key": wg_near.get("public_key", ""),
             "allowed_ips": [f"{alloc['near_ip']}/32"],
         })
+        far_ip = alloc["far_ip"]
+        addr = f"{far_ip}/30"
+        if addr not in addresses:
+            addresses.append(addr)
     return {
         "type": "wireguard",
         "tag": "wg-in",
-        "listen": "::",
-        "listen_port": far_node.wg_port,
-        "private_key": wg_far.get("private_key", ""),
-        "peers": peers,
+        "system": True,
+        "name": "wg0",
         "mtu": 1380,
+        "address": addresses,
+        "private_key": wg_far.get("private_key", ""),
+        "listen_port": far_node.wg_port,
+        "peers": peers,
     }
 
 
@@ -521,11 +527,11 @@ def _build_route(
 
 
 def _build_dns() -> dict:
-    """DNS config with local + remote servers."""
+    """DNS config with local + remote servers (sing-box 1.12+ format)."""
     return {
         "servers": [
-            {"tag": "google", "address": "https://dns.google/dns-query"},
-            {"tag": "local", "address": "local"},
+            {"tag": "google-doh", "type": "tls", "server": "8.8.8.8"},
+            {"tag": "local", "type": "local"},
         ],
         "rules": [{"outbound": "any", "server": "local"}],
     }

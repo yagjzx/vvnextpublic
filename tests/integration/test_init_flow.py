@@ -16,6 +16,7 @@ def _make_materials(inventory):
         "vless_uuid": vless_uuid,
         "reality": {},
         "wg": {},
+        "wg_near": {},
         "hy2": {"password": "test-hy2-pass", "obfs_password": "test-obfs"},
         "anytls_password": "test-anytls-pass",
     }
@@ -26,8 +27,12 @@ def _make_materials(inventory):
                 "public_key": "test-reality-pub",
                 "short_id": "abcd1234",
             }
-        wg_pair = generate_wg_keypair()
-        materials["wg"][node.name] = wg_pair
+            # Near nodes need their own WG keypair for overlay tunnels
+            wg_near_pair = generate_wg_keypair()
+            materials["wg_near"][node.name] = wg_near_pair
+        if node.role in ("far", "residential"):
+            wg_pair = generate_wg_keypair()
+            materials["wg"][node.name] = wg_pair
     return materials
 
 
@@ -64,7 +69,8 @@ def test_full_pipeline(sample_inventory, tmp_path):
 
     for node in sample_inventory.far_nodes():
         config = build_far_config(node, sample_inventory, topo, materials, sample_inventory.defaults)
-        assert "inbounds" in config
+        assert "endpoints" in config
+        assert config["endpoints"][0]["type"] == "wireguard"
 
     # Step 4: Build subscriptions
     routing_rules = {

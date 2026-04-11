@@ -12,6 +12,8 @@ def materials():
         "hy2": {"password": "test-hy2-pw", "obfs_password": "test-obfs-pw"},
         "reality": {"hk-gcp-a": {"private_key": "fake-priv", "public_key": "fake-pub", "short_id": "abcd1234"}},
         "wg": {"us-gcp-a": {"private_key": "fake-wg-priv", "public_key": "fake-wg-pub"}},
+        "wg_near": {"hk-gcp-a": {"private_key": "fake-near-wg-priv", "public_key": "fake-near-wg-pub"},
+                     "jp-gcp-a": {"private_key": "fake-near-wg-priv2", "public_key": "fake-near-wg-pub2"}},
     }
 
 def test_near_config_has_all_inbounds(sample_inventory, materials):
@@ -27,22 +29,26 @@ def test_near_config_has_all_inbounds(sample_inventory, materials):
     assert "anytls-in" in inbound_tags
     assert "anytls-direct-in" in inbound_tags
 
-def test_near_config_has_wg_outbounds(sample_inventory, materials):
+def test_near_config_has_wg_endpoints(sample_inventory, materials):
     state = State()
     topo, state = compute_topology(sample_inventory, state)
     node = sample_inventory.get_node("hk-gcp-a")
     config = build_near_config(node, sample_inventory, topo, materials, sample_inventory.defaults)
+    # WG tunnels are now endpoints (sing-box 1.13+), not outbounds
+    assert "endpoints" in config
+    endpoint_tags = {ep["tag"] for ep in config["endpoints"]}
+    assert "wg-us-gcp-a" in endpoint_tags
     outbound_tags = {ob["tag"] for ob in config["outbounds"]}
-    assert "wg-us-gcp-a" in outbound_tags
     assert "direct" in outbound_tags
 
-def test_far_config_has_wg_inbound(sample_inventory, materials):
+def test_far_config_has_wg_endpoint(sample_inventory, materials):
     state = State()
     topo, state = compute_topology(sample_inventory, state)
     node = sample_inventory.get_node("us-gcp-a")
     config = build_far_config(node, sample_inventory, topo, materials, sample_inventory.defaults)
-    inbound_tags = {ib["tag"] for ib in config["inbounds"]}
-    assert any("wg" in t for t in inbound_tags)
+    assert "endpoints" in config
+    endpoint_tags = {ep["tag"] for ep in config["endpoints"]}
+    assert any("wg" in t for t in endpoint_tags)
 
 def test_render_idempotency(sample_inventory, materials):
     state = State()
