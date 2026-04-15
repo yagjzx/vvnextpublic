@@ -4,6 +4,8 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 
+**English** | [中文](README_CN.md)
+
 **Open-source sing-box fleet management CLI for multi-node proxy networks.**
 
 VVNext automates the full lifecycle of a sing-box proxy fleet: provisioning, config generation, deployment, subscription distribution, health monitoring, and security auditing. It targets IT teams at 100--1000 user organizations that need reliable, multi-hop proxy infrastructure with geographic diversity.
@@ -30,7 +32,11 @@ VVNext automates the full lifecycle of a sing-box proxy fleet: provisioning, con
 | Security audit | Config drift detection, SSH hardening, UFW status, fail2ban, Tailscale SSH check |
 | Bootstrap | Provider-aware (GCP/AWS/DO/home), sysctl tuning, sing-box install, firewall setup |
 | DNS | Cloudflare API integration or manual mode |
-| Init wizard | 13-step pipeline: SSH verify -> bootstrap -> render -> deploy -> subscribe |
+| Init wizard | 13-step pipeline with checkpoint/resume: SSH verify -> bootstrap -> render -> deploy -> subscribe |
+| Add-node | Automated SSH probe + GeoIP inference + resource allocation + full deploy pipeline |
+| Batch-add | Parallel probe, plan display, sequential deploy with far-first ordering |
+| Domain routing | Domain-based split routing: AI -> residential, streaming -> far, CN -> direct |
+| Monitoring | 5 metric categories (system/singbox/network/WG/certs), InfluxDB push, table output |
 
 ## Quick Start
 
@@ -61,11 +67,28 @@ vvnext health --detail  # Full check details
 ### Day-2 operations
 
 ```bash
-vvnext add-node --ip 1.2.3.4 --role near --region jp
+# Add a single node (auto-detects role/region/provider via GeoIP)
+vvnext add-node --ip 1.2.3.4
+
+# Add with explicit parameters
+vvnext add-node --ip 1.2.3.4 --role near --region jp --domain example.com
+
+# Batch-add multiple nodes from a file
+vvnext batch-add config/machines.yaml --domain example.com
+
+# Deploy
 vvnext deploy                  # Render + deploy all nodes
 vvnext deploy hk-gcp-a         # Deploy specific node
+
+# Subscriptions
 vvnext sub rebuild              # Regenerate all subscription files
 vvnext sub server start         # Start HTTPS subscription server
+
+# Monitoring
+vvnext monitor --once           # Collect metrics once, print table
+vvnext monitor --interval 300   # Collect every 5 min, push to InfluxDB
+
+# Maintenance
 vvnext keys rotate              # Rotate all key materials
 vvnext audit                    # Security + config drift audit
 ```
@@ -76,12 +99,14 @@ vvnext audit                    # Security + config drift audit
 vvnext [OPTIONS] COMMAND [ARGS]
 
 Commands:
-  init              Interactive fleet setup wizard (--config for non-interactive)
+  init              Interactive fleet setup wizard (--config for non-interactive, --resume to continue)
   status            Fleet overview: nodes, roles, regions, protocols, ports
-  add-node          Add a node (--ip, --role, --region required)
+  add-node          Add a node with full automated pipeline (--ip required, role/region auto-detected)
+  batch-add         Add multiple nodes from a machines.yaml file (parallel probe + sequential deploy)
   remove-node       Remove a node by name
   deploy            Deploy sing-box configs (all nodes or specific targets)
   health            Run health checks (--detail, --telegram)
+  monitor           Collect metrics from fleet (--once for single run, --interval for daemon)
   sub rebuild       Rebuild subscription files (--format to filter)
   sub server        Start/stop HTTPS subscription server
   audit             Security + config drift audit
@@ -132,7 +157,7 @@ src/vvnext/
   settings.py               # Global settings model
   state.py                  # Persistent WG IP allocations
   overlay.py                # WireGuard topology computation
-  config_generator.py       # sing-box JSON config builder
+  config_generator.py       # sing-box JSON config builder + domain routing
   deploy.py                 # Atomic deploy with rollback
   health.py                 # TCP/UDP/TLS health checks + Telegram
   audit.py                  # Config drift + security audit
@@ -140,6 +165,9 @@ src/vvnext/
   keys.py                   # Key material generation
   dns.py                    # DNS record management
   ssh.py                    # SSH client (paramiko wrapper)
+  probe.py                  # SSH machine probe + GeoIP inference
+  allocator.py              # Resource allocation (ports, SNI, node IDs)
+  collector.py              # Monitoring metrics collector + InfluxDB push
   subscription/
     builder.py              # Subscription orchestrator
     classifier.py           # Proxy group bucket classifier
@@ -149,7 +177,7 @@ src/vvnext/
       shadowrocket.py       # Shadowrocket base64 output
       singbox.py            # sing-box/Hiddify JSON output
 tests/
-  unit/                     # 214 unit tests
+  unit/                     # 232 unit tests
   integration/              # 4 integration tests (full pipeline)
 ```
 
@@ -227,7 +255,7 @@ cd vvnextpublic
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Run tests (231 tests, ~1s)
+# Run tests (232 tests, ~1min)
 pytest
 
 # Run linter
