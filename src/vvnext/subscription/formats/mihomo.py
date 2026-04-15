@@ -88,7 +88,32 @@ def build_mihomo_subscription(
         "dns": {
             "enable": True,
             "enhanced-mode": "fake-ip",
-            "nameserver": ["https://dns.google/dns-query"],
+            "fake-ip-range": "198.18.0.1/16",
+            "nameserver": [
+                "https://dns.google/dns-query",
+                "https://cloudflare-dns.com/dns-query",
+            ],
+            "fake-ip-filter": [
+                "*.lan",
+                "*.local",
+                "*.localhost",
+                "time.*.com",
+                "time.*.gov",
+                "time.*.edu.cn",
+                "time.*.apple.com",
+                "time-ios.apple.com",
+                "time-macos.apple.com",
+                "ntp.*.com",
+                "*.ntp.org.cn",
+                "stun.*.*",
+                "stun.*.*.*",
+                "+.stun.*.*",
+                "+.stun.*.*.*",
+                "*.msftconnecttest.com",
+                "*.msftncsi.com",
+                "localhost.ptlogin2.qq.com",
+                "*.pool.ntp.org",
+            ],
         },
         "proxies": client_nodes,
         "proxy-groups": proxy_groups,
@@ -106,11 +131,19 @@ _GROUP_MAP = {
     "streaming_us": "Streaming-US",
     "streaming_hk": "Streaming-HK",
     "us_exclusive": "US-Exit",
+    "gaming": "Auto-Select",
+    "social": "Auto-Select",
+    "download": "Auto-Select",
+    "direct_cn": "DIRECT",
 }
 
 
 def _build_rules(routing_rules: dict) -> list[str]:
-    """Convert routing_rules.yaml into inline Clash rules."""
+    """Convert routing_rules.yaml into inline Clash rules.
+
+    Domain rules are inlined (not rule-providers) because MetaCubeX
+    doesn't support rule-providers on routers/MerlinClash.
+    """
     rules: list[str] = []
 
     server_routing = routing_rules.get("server_routing", {})
@@ -128,7 +161,20 @@ def _build_rules(routing_rules: dict) -> list[str]:
         for domain in domains:
             rules.append(f"DOMAIN-SUFFIX,{domain},{group}")
 
-    # Standard trailing rules
+    # LAN / private IP ranges — always direct
+    rules.extend([
+        "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+        "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+        "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+        "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+        "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve",
+        "IP-CIDR,198.18.0.0/15,DIRECT,no-resolve",
+        "IP-CIDR6,::1/128,DIRECT,no-resolve",
+        "IP-CIDR6,fc00::/7,DIRECT,no-resolve",
+        "IP-CIDR6,fe80::/10,DIRECT,no-resolve",
+    ])
+
+    # GeoIP and final match
     rules.append("GEOIP,CN,DIRECT")
     rules.append("MATCH,Auto-Select")
 

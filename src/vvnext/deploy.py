@@ -100,24 +100,24 @@ def _backup_current(ssh: SshClient) -> bool:
     _, _, rc = ssh.exec(f"test -f {_SINGBOX_CONFIG_PATH}", check=False)
     if rc != 0:
         return False  # No existing config to backup
-    ssh.exec(f"cp {_SINGBOX_CONFIG_PATH} {_SINGBOX_BACKUP_PATH}")
+    ssh.exec(f"sudo cp {_SINGBOX_CONFIG_PATH} {_SINGBOX_BACKUP_PATH}")
     return True
 
 
 def _atomic_replace(ssh: SshClient) -> None:
     """mv /tmp/config.json /etc/sing-box/config.json"""
-    ssh.exec(f"mv {_TMP_CONFIG_PATH} {_SINGBOX_CONFIG_PATH}")
+    ssh.exec(f"sudo mv {_TMP_CONFIG_PATH} {_SINGBOX_CONFIG_PATH}")
 
 
 def _restart_singbox(ssh: SshClient) -> bool:
     """Restart sing-box and wait for WG warm-up. Returns True if active."""
-    ssh.exec("systemctl restart sing-box", check=False)
+    ssh.exec("sudo systemctl restart sing-box", check=False)
 
     # Wait for WG tunnel warm-up
     time.sleep(_WG_WARMUP_SECONDS)
 
     # Verify service is active
-    out, _, rc = ssh.exec("systemctl is-active sing-box", check=False)
+    out, _, rc = ssh.exec("sudo systemctl is-active sing-box", check=False)
     return out.strip() == "active"
 
 
@@ -127,22 +127,23 @@ def _rollback(ssh: SshClient) -> bool:
     if rc != 0:
         return False  # No backup to restore from
 
-    ssh.exec(f"cp {_SINGBOX_BACKUP_PATH} {_SINGBOX_CONFIG_PATH}")
-    ssh.exec("systemctl restart sing-box", check=False)
+    ssh.exec(f"sudo cp {_SINGBOX_BACKUP_PATH} {_SINGBOX_CONFIG_PATH}")
+    ssh.exec("sudo systemctl restart sing-box", check=False)
 
     time.sleep(_WG_WARMUP_SECONDS)
 
-    out, _, _ = ssh.exec("systemctl is-active sing-box", check=False)
+    out, _, _ = ssh.exec("sudo systemctl is-active sing-box", check=False)
     return out.strip() == "active"
 
 
 def _upload_cdn_cert(ssh: SshClient, cert_path: Path) -> None:
     """Upload CDN Origin CA certificate to /etc/sing-box/certs/."""
-    ssh.exec(f"mkdir -p {_SINGBOX_CERT_DIR}")
+    ssh.exec(f"sudo mkdir -p {_SINGBOX_CERT_DIR}")
+    ssh.exec(f"sudo chown simba:simba {_SINGBOX_CERT_DIR}")
     remote_path = f"{_SINGBOX_CERT_DIR}/{cert_path.name}"
     ssh.upload(cert_path, remote_path)
-    ssh.exec(f"chmod 644 {remote_path}")
-    ssh.exec(f"chown simba:simba {remote_path}")
+    ssh.exec(f"sudo chmod 644 {remote_path}")
+    ssh.exec(f"sudo chown simba:simba {remote_path}")
 
 
 def deploy_fleet(

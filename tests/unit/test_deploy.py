@@ -319,9 +319,11 @@ class TestDeployCdnCertUpload:
         ssh.exec.side_effect = [
             # _upload_cdn_cert: mkdir
             ("", "", 0),
-            # _upload_cdn_cert: chmod
+            # _upload_cdn_cert: chown cert dir
             ("", "", 0),
-            # _upload_cdn_cert: chown
+            # _upload_cdn_cert: chmod file
+            ("", "", 0),
+            # _upload_cdn_cert: chown file
             ("", "", 0),
             # _validate_remote
             ("", "", 0),

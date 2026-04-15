@@ -1,0 +1,29 @@
+# machines.yaml — Batch node addition input for `vvnext batch-add`
+#
+# Usage:
+#   vvnext batch-add machines.yaml --domain example.com
+#
+# All fields except `ip` are optional. If omitted, they will be
+# auto-detected via SSH probe and GeoIP lookup.
+
+machines:
+  # Near (ingress) node — Asia region
+  - ip: 203.0.113.10
+    role: near           # optional: near | far | residential (auto-detected from GeoIP)
+    region: hk           # optional: hk | jp | tw | sg | kr | us (auto-detected)
+    provider: gcp        # optional: gcp | aws | do | dmit | home (auto-detected from ASN)
+
+  # Far (egress) node — US region
+  - ip: 198.51.100.20
+    role: far
+    region: us
+    provider: gcp
+
+  # Minimal entry — everything auto-detected
+  - ip: 192.0.2.30
+
+  # Residential node with Tailscale
+  - ip: 100.100.1.5
+    role: residential
+    region: us
+    provider: home

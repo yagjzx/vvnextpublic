@@ -153,7 +153,7 @@ def init(
 
         typer.echo(f"Running init from config: {config}")
         try:
-            yaml.safe_load(config.read_text())
+            cfg_data = yaml.safe_load(config.read_text())
         except Exception as exc:
             typer.echo(
                 typer.style(f"Error reading config: {exc}", fg=typer.colors.RED),
@@ -161,38 +161,304 @@ def init(
             )
             raise typer.Exit(1)
 
-        steps = [
-            "Verify SSH connectivity",
-            "Probe node environment",
-            "Generate inventory.yaml + settings.yaml",
-            "Generate key materials",
-            "Bootstrap all nodes",
-            "Compute WG overlay topology",
-            "Render all configs",
-            "Deploy configs",
-            "Set up DNS",
-            "Generate subscriptions",
-            "Start subscription server",
-            "Health check",
-            "Output subscription URLs",
-        ]
-        start_step = 0
-        if resume:
-            # In a real implementation, load checkpoint from state
-            typer.echo("Resuming from last checkpoint...")
+        # Load or create checkpoint for resume support
+        checkpoint_path = Path("state") / "init_checkpoint.json"
+        completed_steps: set[int] = set()
+        if resume and checkpoint_path.exists():
+            import json as _json
+            completed_steps = set(_json.loads(checkpoint_path.read_text()).get("completed", []))
+            typer.echo(f"Resuming from checkpoint ({len(completed_steps)} steps done)")
 
-        for i, step in enumerate(steps):
-            if i < start_step:
-                continue
-            step_num = i + 1
-            typer.echo(
-                typer.style(f"[{step_num}/13] {step}...", fg=typer.colors.CYAN)
-            )
-            # Each step would call the appropriate module function here.
-            # For now, this is a working skeleton.
-            typer.echo(f"  -> {step} (done)")
+        def _save_checkpoint(step_num: int) -> None:
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            import json as _json
+            completed_steps.add(step_num)
+            checkpoint_path.write_text(_json.dumps({"completed": sorted(completed_steps)}))
 
-        typer.echo(typer.style("Init complete!", fg=typer.colors.GREEN, bold=True))
+        def _step(num: int, label: str) -> bool:
+            """Print step header, return True if should execute (not already done)."""
+            if num in completed_steps:
+                typer.echo(typer.style(f"[{num}/13] {label} (skipped, already done)", fg=typer.colors.YELLOW))
+                return False
+            typer.echo(typer.style(f"[{num}/13] {label}...", fg=typer.colors.CYAN))
+            return True
+
+        # -- Imports needed across steps --
+        from vvnext.inventory import Inventory, ServerEntry, Defaults
+        from vvnext.settings import load_settings
+        from vvnext.config_generator import (
+            build_near_config, build_far_config, build_manifest, build_client_nodes,
+        )
+
+        # -- Load essential state so resumed runs have access --
+        settings = load_settings(DEFAULT_SETTINGS)
+
+        # If resuming, rebuild inv from saved inventory.yaml; otherwise parse cfg
+        if resume and DEFAULT_INVENTORY.exists():
+            from vvnext.inventory import load_inventory
+            inv = load_inventory(DEFAULT_INVENTORY)
+        else:
+            inv = None  # Will be built in Step 1
+
+        # Load topo from state if available (needed by steps 8+)
+        topo: dict | None = None
+        if resume and DEFAULT_STATE.exists():
+            from vvnext.state import load_state
+            _st = load_state(DEFAULT_STATE)
+            topo = getattr(_st, "topo", None) or _st.get("topo", None) if isinstance(_st, dict) else None
+
+        # Load materials if available (needed by steps 8+)
+        materials: dict | None = None
+        if resume and DEFAULT_MATERIALS.exists():
+            from vvnext.keys import generate_all_materials
+            if inv is not None:
+                materials = generate_all_materials(inv, DEFAULT_MATERIALS)
+
+        # --- Step 1: Parse config and build initial inventory ---
+        if _step(1, "Validate config"):
+            nodes_cfg = cfg_data.get("nodes", [])
+            if not nodes_cfg:
+                typer.echo(typer.style("Error: no nodes in config", fg=typer.colors.RED), err=True)
+                raise typer.Exit(1)
+
+            servers = []
+            for nc in nodes_cfg:
+                # Use "pending" phase initially; promoted to "live" in Step 3
+                # after resources are allocated (validator skips "pending" nodes)
+                phase = nc.get("phase", "pending")
+                servers.append(ServerEntry(
+                    name=nc.get("name", f"{nc.get('region', 'xx')}-{nc.get('provider', 'unknown')}-a"),
+                    role=nc["role"],
+                    region=nc["region"],
+                    provider=nc.get("provider", "unknown"),
+                    public_ip=nc["ip"],
+                    sni=nc.get("sni"),
+                    port_base=nc.get("port_base"),
+                    hy2_sni=nc.get("hy2_sni"),
+                    cdn_domain=nc.get("cdn_domain"),
+                    dns_name=nc.get("dns_name"),
+                    wg_port=nc.get("wg_port"),
+                    wg_peers=nc.get("wg_peers"),
+                    tailscale_ip=nc.get("tailscale_ip"),
+                    ssh_target=nc.get("ssh_target"),
+                    nat=nc.get("nat"),
+                    phase=phase,
+                ))
+            inv = Inventory(servers=servers)
+            typer.echo(f"  -> {len(servers)} node(s) loaded")
+            _save_checkpoint(1)
+
+        # --- Step 2: Verify SSH connectivity ---
+        if _step(2, "Verify SSH connectivity"):
+            from vvnext.ssh import SshClient
+            ssh_key = cfg_data.get("ssh_key", settings.ssh.key_path)
+            failed_ssh: list[str] = []
+            for node in inv.servers:
+                if node.phase not in ("live", "pending"):
+                    continue
+                host = node.tailscale_ip or node.public_ip
+                try:
+                    ssh = SshClient(host=host, user=settings.ssh.user, key_path=ssh_key, timeout=settings.ssh.timeout)
+                    ssh.connect()
+                    ssh.exec("hostname", check=False)
+                    ssh.close()
+                    typer.echo(typer.style(f"  {node.name} ({host}): OK", fg=typer.colors.GREEN))
+                except Exception as exc:
+                    typer.echo(typer.style(f"  {node.name} ({host}): FAILED ({exc})", fg=typer.colors.RED))
+                    failed_ssh.append(node.name)
+            if failed_ssh:
+                typer.echo(typer.style(f"  {len(failed_ssh)} node(s) unreachable: {', '.join(failed_ssh)}", fg=typer.colors.RED))
+                raise typer.Exit(1)
+            _save_checkpoint(2)
+
+        # --- Step 3: Allocate resources for nodes missing them ---
+        if _step(3, "Allocate resources"):
+            from vvnext.allocator import allocate_port_base, allocate_wg_port, pick_sni
+            for node in inv.servers:
+                if node.phase not in ("live", "pending"):
+                    continue
+                if node.role == "near":
+                    if node.port_base is None:
+                        node.port_base = allocate_port_base(inv)
+                        typer.echo(f"  {node.name}: port_base={node.port_base}")
+                    if node.sni is None:
+                        node.sni = pick_sni(inv)
+                        typer.echo(f"  {node.name}: sni={node.sni}")
+                    domain = cfg_data.get("domain", "example.com")
+                    if node.hy2_sni is None:
+                        node.hy2_sni = f"{node.name}.{domain}"
+                    if node.cdn_domain is None:
+                        node.cdn_domain = f"{node.name}-cdn.{domain}"
+                    if node.dns_name is None:
+                        node.dns_name = f"{node.name}.{domain}"
+                elif node.role in ("far", "residential"):
+                    if node.wg_port is None:
+                        node.wg_port = allocate_wg_port(inv)
+                        typer.echo(f"  {node.name}: wg_port={node.wg_port}")
+            # Auto-assign wg_peers if not set: near nodes peer with all far nodes
+            far_names = [s.name for s in inv.servers if s.role in ("far", "residential") and s.phase in ("live", "pending")]
+            for node in inv.servers:
+                if node.role == "near" and node.wg_peers is None and node.phase in ("live", "pending"):
+                    node.wg_peers = far_names
+                    typer.echo(f"  {node.name}: wg_peers={far_names}")
+            # Promote pending nodes to live now that resources are allocated
+            for node in inv.servers:
+                if node.phase == "pending":
+                    node.phase = "live"
+            _save_checkpoint(3)
+
+        # --- Step 4: Generate key materials ---
+        if _step(4, "Generate key materials"):
+            from vvnext.keys import generate_all_materials
+            materials = generate_all_materials(inv, DEFAULT_MATERIALS)  # noqa: F841 - used in Step 8
+            typer.echo(f"  -> Generated materials: UUID, {len(materials.get('reality', {}))} Reality, {len(materials.get('wg', {}))} WG")
+            _save_checkpoint(4)
+
+        # --- Step 5: Write inventory.yaml ---
+        if _step(5, "Write inventory.yaml"):
+            inv_data = {"defaults": inv.defaults.model_dump(), "servers": [s.model_dump(exclude_none=True) for s in inv.servers]}
+            DEFAULT_INVENTORY.parent.mkdir(parents=True, exist_ok=True)
+            DEFAULT_INVENTORY.write_text(yaml.dump(inv_data, default_flow_style=False, sort_keys=False))
+            typer.echo(f"  -> {DEFAULT_INVENTORY}")
+            _save_checkpoint(5)
+
+        # --- Step 6: Bootstrap all nodes ---
+        if _step(6, "Bootstrap all nodes"):
+            from vvnext.bootstrap import bootstrap_node
+            from vvnext.ssh import SshClient
+            ssh_key = cfg_data.get("ssh_key", settings.ssh.key_path)
+            for node in inv.servers:
+                if node.phase != "live":
+                    continue
+                typer.echo(f"  Bootstrapping {node.name}...")
+                host = node.tailscale_ip or node.public_ip
+                ssh = SshClient(host=host, user=settings.ssh.user, key_path=ssh_key, timeout=settings.ssh.timeout)
+                ssh.connect()
+                try:
+                    bootstrap_node(ssh, node, settings)
+                    typer.echo(typer.style(f"    {node.name}: OK", fg=typer.colors.GREEN))
+                except Exception as exc:
+                    typer.echo(typer.style(f"    {node.name}: FAILED ({exc})", fg=typer.colors.RED))
+                finally:
+                    ssh.close()
+            _save_checkpoint(6)
+
+        # --- Step 7: Compute WG overlay topology ---
+        if _step(7, "Compute WG overlay"):
+            from vvnext.overlay import compute_topology
+            from vvnext.state import load_state, save_state
+            _state = load_state(DEFAULT_STATE)
+            topo, _state = compute_topology(inv, _state)  # noqa: F841 - used in Step 8
+            save_state(_state, DEFAULT_STATE)
+            typer.echo(f"  -> {len(topo)} WG peer pairs")
+            _save_checkpoint(7)
+
+        # --- Step 8: Render configs ---
+        if _step(8, "Render configs"):
+            # Ensure materials and topo are loaded (may have been set in earlier steps or resume preamble)
+            if materials is None:
+                from vvnext.keys import generate_all_materials
+                materials = generate_all_materials(inv, DEFAULT_MATERIALS)
+            if topo is None:
+                from vvnext.overlay import compute_topology
+                from vvnext.state import load_state
+                _state = load_state(DEFAULT_STATE)
+                topo, _ = compute_topology(inv, _state)
+            import json as _json
+            for node in inv.servers:
+                if node.phase != "live":
+                    continue
+                out_dir = DEFAULT_RENDERED / node.name
+                out_dir.mkdir(parents=True, exist_ok=True)
+                if node.role == "near":
+                    config_dict = build_near_config(node, inv, topo, materials, inv.defaults)
+                    manifest = build_manifest(node, inv, topo, materials, inv.defaults)
+                    client_nodes = build_client_nodes(node, inv, topo, materials, inv.defaults)
+                    (out_dir / "manifest.json").write_text(_json.dumps(manifest, indent=2))
+                    (out_dir / "client_nodes.json").write_text(_json.dumps(client_nodes, indent=2))
+                else:
+                    config_dict = build_far_config(node, inv, topo, materials, inv.defaults)
+                (out_dir / "config.json").write_text(_json.dumps(config_dict, indent=2))
+                typer.echo(f"  {node.name}: config.json rendered")
+            _save_checkpoint(8)
+
+        # --- Step 9: Deploy configs ---
+        if _step(9, "Deploy configs"):
+            from vvnext.deploy import deploy_fleet
+            import json as _json
+            configs: dict[str, dict] = {}
+            for node in inv.servers:
+                if node.phase != "live":
+                    continue
+                cp = DEFAULT_RENDERED / node.name / "config.json"
+                if cp.exists():
+                    configs[node.name] = _json.loads(cp.read_text())
+            results = deploy_fleet(inv, configs, settings)
+            for name, ok in results.items():
+                if ok:
+                    typer.echo(typer.style(f"  {name}: OK", fg=typer.colors.GREEN))
+                else:
+                    typer.echo(typer.style(f"  {name}: FAILED", fg=typer.colors.RED))
+            _save_checkpoint(9)
+
+        # --- Step 10: Set up DNS ---
+        if _step(10, "Set up DNS"):
+            from vvnext.dns import upsert_dns_records, format_manual_instructions, build_dns_plan
+            plan = build_dns_plan(inv, settings)
+            if settings.dns_provider == "cloudflare" and settings.cf_token:
+                results = upsert_dns_records(inv, settings)
+                typer.echo(f"  -> {len(results)} DNS record(s) created/updated")
+            else:
+                typer.echo("  DNS provider not configured. Manual DNS setup required:")
+                typer.echo(format_manual_instructions(plan))
+            _save_checkpoint(10)
+
+        # --- Step 11: Build subscriptions ---
+        if _step(11, "Build subscriptions"):
+            from vvnext.subscription.builder import build_all_subscriptions
+            import json as _json
+            routing_rules: dict = {}
+            if DEFAULT_ROUTING_RULES.exists():
+                routing_rules = yaml.safe_load(DEFAULT_ROUTING_RULES.read_text()) or {}
+            manifests: list[dict] = []
+            all_client_nodes: list[dict] = []
+            for node in inv.near_nodes():
+                mp = DEFAULT_RENDERED / node.name / "manifest.json"
+                cnp = DEFAULT_RENDERED / node.name / "client_nodes.json"
+                if mp.exists():
+                    manifests.append(_json.loads(mp.read_text()))
+                if cnp.exists():
+                    all_client_nodes.extend(_json.loads(cnp.read_text()))
+            sub_dir = DEFAULT_RENDERED / "subscription"
+            results = build_all_subscriptions(manifests, all_client_nodes, routing_rules, sub_dir)
+            for fmt, path in results.items():
+                typer.echo(f"  {fmt}: {path}")
+            _save_checkpoint(11)
+
+        # --- Step 12: Health check ---
+        if _step(12, "Health check"):
+            from vvnext.health import check_fleet
+            report = check_fleet(inv, settings, detail=True)
+            typer.echo(f"  {report.summary()}")
+            for r in report.failed:
+                typer.echo(typer.style(f"  [FAIL] {r.node} | {r.check_type} | {r.target}", fg=typer.colors.RED))
+            _save_checkpoint(12)
+
+        # --- Step 13: Output subscription URLs ---
+        if _step(13, "Output subscription URLs"):
+            sub_dir = DEFAULT_RENDERED / "subscription"
+            typer.echo("  Subscription files:")
+            for f in sorted(sub_dir.iterdir()) if sub_dir.exists() else []:
+                typer.echo(f"    {f}")
+            sub_settings = settings.subscription
+            typer.echo(f"\n  To serve subscriptions: vvnext sub server start")
+            typer.echo(f"  Subscription port: {sub_settings.port}")
+            _save_checkpoint(13)
+
+        # Clean up checkpoint on full success
+        if checkpoint_path.exists():
+            checkpoint_path.unlink()
+        typer.echo(typer.style("\nInit complete!", fg=typer.colors.GREEN, bold=True))
     else:
         # Interactive mode
         typer.echo(
@@ -266,103 +532,575 @@ def add_node(
     ip: str = typer.Option(..., "--ip", help="Node IP address"),
     password: str = typer.Option("", "--password", "-p", help="SSH password"),
     key_path: str = typer.Option("", "--key", "-k", help="SSH key path"),
-    role: str = typer.Option("", "--role", help="Node role (near/far/residential)"),
-    region: str = typer.Option("", "--region", help="Node region (hk/jp/tw/us)"),
-    resume: bool = typer.Option(False, "--resume"),
+    role: str = typer.Option("", "--role", help="Override auto-detected role (near/far/residential)"),
+    region: str = typer.Option("", "--region", help="Override auto-detected region (hk/jp/tw/us)"),
+    provider: str = typer.Option("", "--provider", help="Override auto-detected provider"),
+    domain: str = typer.Option("", "--domain", "-d", help="Domain for DNS/cert (e.g. example.com)"),
+    resume: bool = typer.Option(False, "--resume", help="Resume from checkpoint"),
     inventory: Path = typer.Option(DEFAULT_INVENTORY, "--inventory", "-i"),
     settings_path: Path = typer.Option(DEFAULT_SETTINGS, "--settings", "-s"),
 ) -> None:
-    """Add a node to the fleet.
+    """Add a node to the fleet with full automated pipeline.
 
-    Validates SSH connectivity, probes the environment, and adds the node
-    to the inventory file.
+    13-step process:
+    1. SSH probe + GeoIP inference
+    2. Confirm role/region/provider
+    3. Generate node_id
+    4. Allocate resources (port_base/wg_port/SNI)
+    5. Generate key materials
+    6. Update inventory.yaml
+    7. Compute WG topology
+    8. Bootstrap remote node
+    9. Render + deploy sing-box config
+    10. DNS records
+    11. Rebuild subscriptions
+    12. Health check
+    13. Summary
     """
-    if not role:
-        typer.echo(
-            typer.style("Error: --role is required (near/far/residential)", fg=typer.colors.RED),
-            err=True,
-        )
-        raise typer.Exit(1)
-    if not region:
-        typer.echo(
-            typer.style("Error: --region is required (hk/jp/tw/us)", fg=typer.colors.RED),
-            err=True,
-        )
-        raise typer.Exit(1)
+    from vvnext.inventory import Inventory, ServerEntry, load_inventory
+    from vvnext.settings import load_settings
+    from vvnext.ssh import SshClient
 
     inv = _load_inventory_or_exit(inventory)
     settings = _load_settings_or_exit(settings_path)
-
-    typer.echo(f"Adding node: ip={ip}, role={role}, region={region}")
-
-    # Verify SSH connectivity
-    from vvnext.ssh import SshClient
 
     ssh_user = settings.ssh.user
     ssh_key = key_path if key_path else settings.ssh.key_path
     ssh_pass = password if password else None
 
-    typer.echo("Verifying SSH connectivity...")
-    try:
-        ssh = SshClient(
-            host=ip,
-            user=ssh_user,
-            key_path=ssh_key if not ssh_pass else None,
-            password=ssh_pass,
-            timeout=settings.ssh.timeout,
+    # Checkpoint support
+    import json as _json
+    checkpoint_dir = Path("state") / ".add_node"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    cp_path = checkpoint_dir / f"{ip.replace('.', '_')}.json"
+    completed_steps: set[int] = set()
+    cp_data: dict = {}
+    if resume and cp_path.exists():
+        cp_data = _json.loads(cp_path.read_text())
+        completed_steps = set(cp_data.get("completed", []))
+        typer.echo(f"Resuming add-node for {ip} ({len(completed_steps)} steps done)")
+
+    def _save_cp(step: int, extra: dict | None = None) -> None:
+        completed_steps.add(step)
+        if extra:
+            cp_data.update(extra)
+        cp_data["completed"] = sorted(completed_steps)
+        cp_path.write_text(_json.dumps(cp_data, indent=2))
+
+    def _step(num: int, label: str) -> bool:
+        if num in completed_steps:
+            typer.echo(typer.style(f"[{num}/13] {label} (skipped)", fg=typer.colors.YELLOW))
+            return False
+        typer.echo(typer.style(f"[{num}/13] {label}...", fg=typer.colors.CYAN))
+        return True
+
+    # --- Step 1: SSH probe + GeoIP ---
+    node_id = cp_data.get("node_id", "")
+    detected_role = role
+    detected_region = region
+    detected_provider = provider
+
+    if _step(1, "SSH probe + GeoIP"):
+        from vvnext.probe import probe_machine, infer_geo, infer_role, infer_region, infer_provider, detect_nat
+
+        try:
+            ssh = SshClient(
+                host=ip, user=ssh_user,
+                key_path=ssh_key if not ssh_pass else None,
+                password=ssh_pass, timeout=settings.ssh.timeout,
+            )
+            ssh.connect()
+            probe = probe_machine(ssh)
+            is_nat = detect_nat(ssh, ip)
+            ssh.close()
+        except Exception as exc:
+            typer.echo(typer.style(f"  SSH failed: {exc}", fg=typer.colors.RED), err=True)
+            raise typer.Exit(1)
+
+        geo = infer_geo(ip)
+        typer.echo(f"  Host: {probe.hostname} | OS: {probe.os} {probe.arch} | Mem: {probe.mem_mb}MB | Disk: {probe.disk_gb}GB")
+        typer.echo(f"  GeoIP: {geo.country} ({geo.country_code}) | {geo.city} | ISP: {geo.isp}")
+        typer.echo(f"  ASN: {geo.as_number} {geo.as_name} | NAT: {is_nat}")
+
+        if not detected_role:
+            detected_role = infer_role(geo)
+        if not detected_region:
+            detected_region = infer_region(geo)
+        if not detected_provider:
+            detected_provider = infer_provider(geo)
+
+        _save_cp(1, {
+            "role": detected_role, "region": detected_region,
+            "provider": detected_provider, "nat": is_nat,
+        })
+    else:
+        detected_role = cp_data.get("role", detected_role)
+        detected_region = cp_data.get("region", detected_region)
+        detected_provider = cp_data.get("provider", detected_provider)
+
+    # --- Step 2: Confirm role/region/provider ---
+    if _step(2, "Confirm role/region/provider"):
+        typer.echo(f"  Role: {detected_role} | Region: {detected_region} | Provider: {detected_provider}")
+        _save_cp(2)
+
+    # --- Step 3: Generate node_id ---
+    if _step(3, "Generate node_id"):
+        from vvnext.allocator import generate_node_id
+        node_id = generate_node_id(detected_role, detected_region, detected_provider, inv)
+        typer.echo(f"  Node ID: {node_id}")
+        _save_cp(3, {"node_id": node_id})
+    else:
+        node_id = cp_data.get("node_id", node_id)
+
+    # --- Step 4: Allocate resources ---
+    if _step(4, "Allocate resources"):
+        from vvnext.allocator import allocate_near_resources, allocate_far_resources
+        if detected_role == "near":
+            resources = allocate_near_resources(inv)
+            # Derive domain-based fields
+            dom = domain or settings.domain or "example.com"
+            resources["hy2_sni"] = f"{node_id}.{dom}"
+            resources["cdn_domain"] = f"{node_id}-cdn.{dom}"
+            resources["dns_name"] = f"{node_id}.{dom}"
+        else:
+            resources = allocate_far_resources(inv)
+        typer.echo(f"  Resources: {resources}")
+        _save_cp(4, {"resources": resources})
+    else:
+        resources = cp_data.get("resources", {})
+
+    # --- Step 5: Generate key materials ---
+    if _step(5, "Generate key materials"):
+        # Add the new node to inventory (as pending) for key generation
+        new_node = ServerEntry(
+            name=node_id, role=detected_role, region=detected_region,
+            provider=detected_provider, public_ip=ip, phase="pending",
+            nat=cp_data.get("nat"),
+            **{k: v for k, v in resources.items() if k in ServerEntry.model_fields},
         )
-        ssh.connect()
-        out, _, _ = ssh.exec("hostname", check=False)
-        hostname = out.strip()
-        ssh.close()
-        typer.echo(typer.style(f"  SSH OK (hostname: {hostname})", fg=typer.colors.GREEN))
-    except Exception as exc:
-        typer.echo(
-            typer.style(f"  SSH connection failed: {exc}", fg=typer.colors.RED),
-            err=True,
+        inv.servers.append(new_node)
+
+        from vvnext.keys import generate_all_materials
+        materials = generate_all_materials(inv, DEFAULT_MATERIALS)
+        typer.echo(f"  Materials generated for {node_id}")
+        _save_cp(5)
+    else:
+        # Rebuild the node object from checkpoint data for later steps
+        new_node = ServerEntry(
+            name=node_id, role=detected_role, region=detected_region,
+            provider=detected_provider, public_ip=ip, phase="pending",
+            nat=cp_data.get("nat"),
+            **{k: v for k, v in resources.items() if k in ServerEntry.model_fields},
         )
+        if not any(s.name == node_id for s in inv.servers):
+            inv.servers.append(new_node)
+        from vvnext.keys import generate_all_materials
+        materials = generate_all_materials(inv, DEFAULT_MATERIALS)
+
+    # Promote to live and assign wg_peers for near nodes
+    new_node.phase = "live"
+    if detected_role == "near" and new_node.wg_peers is None:
+        new_node.wg_peers = [s.name for s in inv.servers if s.role in ("far", "residential") and s.phase == "live" and s.name != node_id]
+
+    # --- Step 6: Update inventory.yaml ---
+    if _step(6, "Update inventory.yaml"):
+        inv_data = {
+            "defaults": inv.defaults.model_dump(),
+            "servers": [s.model_dump(exclude_none=True) for s in inv.servers],
+        }
+        inventory.parent.mkdir(parents=True, exist_ok=True)
+        inventory.write_text(yaml.dump(inv_data, default_flow_style=False, sort_keys=False))
+        typer.echo(f"  -> {inventory}")
+        _save_cp(6)
+
+    # --- Step 7: Compute WG topology ---
+    if _step(7, "Compute WG topology"):
+        from vvnext.overlay import compute_topology
+        from vvnext.state import load_state, save_state
+        state = load_state(DEFAULT_STATE)
+        topo, state = compute_topology(inv, state)
+        save_state(state, DEFAULT_STATE)
+        typer.echo(f"  -> {len(topo)} WG peer pairs")
+        _save_cp(7)
+    else:
+        from vvnext.overlay import compute_topology
+        from vvnext.state import load_state
+        state = load_state(DEFAULT_STATE)
+        topo, _ = compute_topology(inv, state)
+
+    # --- Step 8: Bootstrap remote node ---
+    if _step(8, "Bootstrap node"):
+        from vvnext.bootstrap import bootstrap_node
+        try:
+            ssh = SshClient(
+                host=ip, user=ssh_user,
+                key_path=ssh_key if not ssh_pass else None,
+                password=ssh_pass, timeout=settings.ssh.timeout,
+            )
+            ssh.connect()
+            bootstrap_node(ssh, new_node, settings)
+            ssh.close()
+            typer.echo(typer.style(f"  {node_id}: bootstrapped", fg=typer.colors.GREEN))
+        except Exception as exc:
+            typer.echo(typer.style(f"  Bootstrap failed: {exc}", fg=typer.colors.RED), err=True)
+            raise typer.Exit(1)
+        _save_cp(8)
+
+    # --- Step 9: Render + deploy config ---
+    if _step(9, "Render + deploy config"):
+        from vvnext.config_generator import build_near_config, build_far_config, build_manifest, build_client_nodes
+        from vvnext.deploy import deploy_node
+
+        out_dir = DEFAULT_RENDERED / node_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        if detected_role == "near":
+            config_dict = build_near_config(new_node, inv, topo, materials, inv.defaults)
+            manifest = build_manifest(new_node, inv, topo, materials, inv.defaults)
+            client_nodes = build_client_nodes(new_node, inv, topo, materials, inv.defaults)
+            (out_dir / "manifest.json").write_text(_json.dumps(manifest, indent=2))
+            (out_dir / "client_nodes.json").write_text(_json.dumps(client_nodes, indent=2))
+        else:
+            config_dict = build_far_config(new_node, inv, topo, materials, inv.defaults)
+
+        (out_dir / "config.json").write_text(_json.dumps(config_dict, indent=2))
+
+        # Deploy
+        try:
+            ssh = SshClient(
+                host=ip, user=ssh_user,
+                key_path=ssh_key if not ssh_pass else None,
+                password=ssh_pass, timeout=settings.ssh.timeout,
+            )
+            ssh.connect()
+            ok = deploy_node(ssh, new_node, config_dict, settings)
+            ssh.close()
+            if ok:
+                typer.echo(typer.style(f"  {node_id}: deployed", fg=typer.colors.GREEN))
+            else:
+                typer.echo(typer.style(f"  {node_id}: deploy failed (rolled back)", fg=typer.colors.RED))
+                raise typer.Exit(1)
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            typer.echo(typer.style(f"  Deploy error: {exc}", fg=typer.colors.RED), err=True)
+            raise typer.Exit(1)
+        _save_cp(9)
+
+    # --- Step 10: DNS records ---
+    if _step(10, "DNS records"):
+        from vvnext.dns import build_dns_plan, format_manual_instructions
+        plan = build_dns_plan(inv, settings)
+        if hasattr(settings, "cf_token") and settings.cf_token:
+            from vvnext.dns import upsert_dns_records
+            results = upsert_dns_records(inv, settings)
+            typer.echo(f"  -> {len(results)} DNS record(s) created/updated")
+        else:
+            typer.echo("  DNS provider not configured. Manual setup required:")
+            typer.echo(format_manual_instructions(plan))
+        _save_cp(10)
+
+    # --- Step 11: Rebuild subscriptions ---
+    if _step(11, "Rebuild subscriptions"):
+        from vvnext.subscription.builder import build_all_subscriptions
+        routing_rules: dict = {}
+        if DEFAULT_ROUTING_RULES.exists():
+            routing_rules = yaml.safe_load(DEFAULT_ROUTING_RULES.read_text()) or {}
+        manifests: list[dict] = []
+        all_client_nodes: list[dict] = []
+        for node in inv.near_nodes():
+            mp = DEFAULT_RENDERED / node.name / "manifest.json"
+            cnp = DEFAULT_RENDERED / node.name / "client_nodes.json"
+            if mp.exists():
+                manifests.append(_json.loads(mp.read_text()))
+            if cnp.exists():
+                all_client_nodes.extend(_json.loads(cnp.read_text()))
+        sub_dir = DEFAULT_RENDERED / "subscription"
+        results = build_all_subscriptions(manifests, all_client_nodes, routing_rules, sub_dir)
+        for fmt, path in results.items():
+            typer.echo(f"  {fmt}: {path}")
+        _save_cp(11)
+
+    # --- Step 12: Health check ---
+    if _step(12, "Health check"):
+        from vvnext.health import check_fleet
+        report = check_fleet(inv, settings, detail=False)
+        node_result = next((r for r in report.results if r.node == node_id), None)
+        if node_result and node_result.ok:
+            typer.echo(typer.style(f"  {node_id}: healthy", fg=typer.colors.GREEN))
+        elif node_result:
+            typer.echo(typer.style(f"  {node_id}: {node_result.detail}", fg=typer.colors.YELLOW))
+        else:
+            typer.echo(typer.style(f"  {node_id}: no health data", fg=typer.colors.YELLOW))
+        _save_cp(12)
+
+    # --- Step 13: Summary ---
+    if _step(13, "Summary"):
+        typer.echo(f"  Node: {node_id}")
+        typer.echo(f"  Role: {detected_role} | Region: {detected_region} | Provider: {detected_provider}")
+        typer.echo(f"  IP: {ip}")
+        for k, v in resources.items():
+            typer.echo(f"  {k}: {v}")
+        _save_cp(13)
+
+    # Clean up checkpoint on full success
+    if cp_path.exists():
+        cp_path.unlink()
+    typer.echo(typer.style(f"\nNode '{node_id}' added successfully!", fg=typer.colors.GREEN, bold=True))
+
+
+# ---------------------------------------------------------------------------
+# batch-add
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def batch_add(
+    machines_file: Path = typer.Argument(..., help="YAML file with machine list"),
+    domain: str = typer.Option("", "--domain", "-d", help="Domain for DNS/cert"),
+    inventory: Path = typer.Option(DEFAULT_INVENTORY, "--inventory", "-i"),
+    settings_path: Path = typer.Option(DEFAULT_SETTINGS, "--settings", "-s"),
+) -> None:
+    """Add multiple nodes from a machines.yaml file.
+
+    machines.yaml format:
+      machines:
+        - ip: 1.2.3.4
+          role: near         # optional, auto-detected
+          region: hk         # optional, auto-detected
+          provider: gcp      # optional, auto-detected
+        - ip: 5.6.7.8
+
+    Pipeline:
+    Phase 1: Parallel SSH probe + GeoIP (max 4 concurrent)
+    Phase 2: Display plan table, confirm
+    Phase 3: Sequential add (far nodes first, then near)
+    Phase 4: Rebuild subscriptions once + health check
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from vvnext.inventory import load_inventory
+    from vvnext.settings import load_settings
+    from vvnext.ssh import SshClient
+    from vvnext.probe import probe_machine, infer_geo, infer_role, infer_region, infer_provider, detect_nat
+    from vvnext.allocator import (
+        generate_node_id, allocate_port_base, allocate_wg_port, pick_sni,
+        allocate_near_resources, allocate_far_resources,
+    )
+
+    if not machines_file.exists():
+        typer.echo(typer.style(f"Error: file not found: {machines_file}", fg=typer.colors.RED), err=True)
         raise typer.Exit(1)
 
-    # Generate a name for the node
-    existing_names = {s.name for s in inv.servers}
-    suffix = "a"
-    while True:
-        # Try to find a unique name
-        name_candidate = f"{region}-new-{suffix}"
-        if name_candidate not in existing_names:
-            break
-        suffix = chr(ord(suffix) + 1)
+    machines = yaml.safe_load(machines_file.read_text()).get("machines", [])
+    if not machines:
+        typer.echo(typer.style("Error: no machines in file", fg=typer.colors.RED), err=True)
+        raise typer.Exit(1)
 
-    typer.echo(f"  Node name: {name_candidate}")
+    inv = _load_inventory_or_exit(inventory)
+    settings = _load_settings_or_exit(settings_path)
 
-    # Add to inventory data
-    new_entry = {
-        "name": name_candidate,
-        "role": role,
-        "region": region,
-        "provider": "unknown",
-        "public_ip": ip,
-    }
-    if role == "near":
-        typer.echo(
-            typer.style(
-                "  Note: near nodes require sni, port_base, hy2_sni, cdn_domain, dns_name.",
-                fg=typer.colors.YELLOW,
+    # === Phase 1: Parallel probe ===
+    typer.echo(typer.style("Phase 1: Probing machines...", fg=typer.colors.CYAN, bold=True))
+
+    probe_results: dict[str, dict] = {}
+
+    def _probe_one(m: dict) -> tuple[str, dict]:
+        ip = m["ip"]
+        try:
+            ssh = SshClient(
+                host=ip, user=settings.ssh.user,
+                key_path=settings.ssh.key_path,
+                timeout=settings.ssh.timeout,
             )
-        )
-        typer.echo("  Please edit the inventory file to add these fields.")
+            ssh.connect()
+            probe = probe_machine(ssh)
+            is_nat = detect_nat(ssh, ip)
+            ssh.close()
+            geo = infer_geo(ip)
+            r = m.get("role") or infer_role(geo)
+            reg = m.get("region") or infer_region(geo)
+            prov = m.get("provider") or infer_provider(geo)
+            return ip, {
+                "ok": True, "role": r, "region": reg, "provider": prov,
+                "hostname": probe.hostname, "mem_mb": probe.mem_mb,
+                "country": geo.country_code, "city": geo.city, "nat": is_nat,
+            }
+        except Exception as exc:
+            return ip, {"ok": False, "error": str(exc)}
 
-    # Append to inventory file
-    try:
-        inv_data = yaml.safe_load(inventory.read_text())
-        inv_data.setdefault("servers", []).append(new_entry)
-        inventory.write_text(yaml.dump(inv_data, default_flow_style=False, sort_keys=False))
-        typer.echo(typer.style(f"Node '{name_candidate}' added to {inventory}", fg=typer.colors.GREEN))
-    except Exception as exc:
-        typer.echo(
-            typer.style(f"Error updating inventory: {exc}", fg=typer.colors.RED),
-            err=True,
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_probe_one, m): m for m in machines}
+        for future in as_completed(futures):
+            ip, result = future.result()
+            probe_results[ip] = result
+            status = typer.style("OK", fg=typer.colors.GREEN) if result["ok"] else typer.style("FAIL", fg=typer.colors.RED)
+            typer.echo(f"  {ip}: {status}")
+
+    # Filter out failed probes
+    valid = {ip: r for ip, r in probe_results.items() if r["ok"]}
+    failed = {ip: r for ip, r in probe_results.items() if not r["ok"]}
+
+    if failed:
+        typer.echo(typer.style(f"\n{len(failed)} machine(s) unreachable:", fg=typer.colors.RED))
+        for ip, r in failed.items():
+            typer.echo(f"  {ip}: {r.get('error', 'unknown')}")
+
+    if not valid:
+        typer.echo(typer.style("Error: no reachable machines", fg=typer.colors.RED), err=True)
+        raise typer.Exit(1)
+
+    # === Phase 2: Plan table ===
+    typer.echo(typer.style("\nPhase 2: Planned additions", fg=typer.colors.CYAN, bold=True))
+
+    plan: list[dict] = []
+    for ip, r in valid.items():
+        node_id = generate_node_id(r["role"], r["region"], r["provider"], inv)
+        # Temporarily add to inv so next ID generation skips it
+        from vvnext.inventory import ServerEntry
+        tmp = ServerEntry(
+            name=node_id, role=r["role"], region=r["region"],
+            provider=r["provider"], public_ip=ip, phase="pending",
         )
+        inv.servers.append(tmp)
+
+        entry = {"ip": ip, "node_id": node_id, **r, "node_obj": tmp}
+        plan.append(entry)
+
+    # Print plan table
+    header = f"{'Node ID':<25} {'Role':<10} {'Region':<8} {'Provider':<10} {'IP':<18} {'Hostname'}"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for p in plan:
+        typer.echo(f"{p['node_id']:<25} {p['role']:<10} {p['region']:<8} {p['provider']:<10} {p['ip']:<18} {p.get('hostname', '-')}")
+
+    typer.echo(f"\n{len(plan)} node(s) to add.")
+
+    # === Phase 3: Sequential execution (far first, then near) ===
+    typer.echo(typer.style("\nPhase 3: Adding nodes...", fg=typer.colors.CYAN, bold=True))
+
+    # Sort: far/residential first, then near (near depends on far for WG peers)
+    plan.sort(key=lambda p: 0 if p["role"] in ("far", "residential") else 1)
+
+    dom = domain or settings.domain or "example.com"
+    added: list[str] = []
+    add_failed: list[str] = []
+
+    for p in plan:
+        node_obj = p["node_obj"]
+        typer.echo(f"\n--- Adding {p['node_id']} ({p['ip']}) ---")
+
+        # Allocate resources
+        if p["role"] == "near":
+            resources = allocate_near_resources(inv)
+            node_obj.port_base = resources["port_base"]
+            node_obj.sni = resources["sni"]
+            node_obj.hy2_sni = f"{p['node_id']}.{dom}"
+            node_obj.cdn_domain = f"{p['node_id']}-cdn.{dom}"
+            node_obj.dns_name = f"{p['node_id']}.{dom}"
+            far_names = [s.name for s in inv.servers if s.role in ("far", "residential") and s.phase == "live"]
+            node_obj.wg_peers = far_names
+        else:
+            resources = allocate_far_resources(inv)
+            node_obj.wg_port = resources["wg_port"]
+
+        node_obj.phase = "live"
+        node_obj.nat = p.get("nat")
+
+        # Generate keys
+        from vvnext.keys import generate_all_materials
+        materials = generate_all_materials(inv, DEFAULT_MATERIALS)
+
+        # Compute topology
+        from vvnext.overlay import compute_topology
+        from vvnext.state import load_state, save_state
+        state = load_state(DEFAULT_STATE)
+        topo, state = compute_topology(inv, state)
+        save_state(state, DEFAULT_STATE)
+
+        # Bootstrap + render + deploy
+        try:
+            ssh = SshClient(
+                host=p["ip"], user=settings.ssh.user,
+                key_path=settings.ssh.key_path,
+                timeout=settings.ssh.timeout,
+            )
+            ssh.connect()
+
+            from vvnext.bootstrap import bootstrap_node
+            bootstrap_node(ssh, node_obj, settings)
+
+            from vvnext.config_generator import build_near_config, build_far_config, build_manifest, build_client_nodes
+            from vvnext.deploy import deploy_node
+            import json as _json
+
+            out_dir = DEFAULT_RENDERED / p["node_id"]
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            if p["role"] == "near":
+                config_dict = build_near_config(node_obj, inv, topo, materials, inv.defaults)
+                manifest = build_manifest(node_obj, inv, topo, materials, inv.defaults)
+                client_nodes = build_client_nodes(node_obj, inv, topo, materials, inv.defaults)
+                (out_dir / "manifest.json").write_text(_json.dumps(manifest, indent=2))
+                (out_dir / "client_nodes.json").write_text(_json.dumps(client_nodes, indent=2))
+            else:
+                config_dict = build_far_config(node_obj, inv, topo, materials, inv.defaults)
+
+            (out_dir / "config.json").write_text(_json.dumps(config_dict, indent=2))
+
+            ok = deploy_node(ssh, node_obj, config_dict, settings)
+            ssh.close()
+
+            if ok:
+                typer.echo(typer.style(f"  {p['node_id']}: OK", fg=typer.colors.GREEN))
+                added.append(p["node_id"])
+            else:
+                typer.echo(typer.style(f"  {p['node_id']}: deploy failed", fg=typer.colors.RED))
+                add_failed.append(p["node_id"])
+        except Exception as exc:
+            typer.echo(typer.style(f"  {p['node_id']}: FAILED ({exc})", fg=typer.colors.RED))
+            add_failed.append(p["node_id"])
+
+    # Save inventory
+    inv_data = {
+        "defaults": inv.defaults.model_dump(),
+        "servers": [s.model_dump(exclude_none=True) for s in inv.servers],
+    }
+    inventory.write_text(yaml.dump(inv_data, default_flow_style=False, sort_keys=False))
+
+    # === Phase 4: Subscriptions + health ===
+    typer.echo(typer.style("\nPhase 4: Rebuild subscriptions + health check", fg=typer.colors.CYAN, bold=True))
+
+    if added:
+        from vvnext.subscription.builder import build_all_subscriptions
+        import json as _json
+
+        routing_rules: dict = {}
+        if DEFAULT_ROUTING_RULES.exists():
+            routing_rules = yaml.safe_load(DEFAULT_ROUTING_RULES.read_text()) or {}
+
+        manifests: list[dict] = []
+        all_client_nodes: list[dict] = []
+        for node in inv.near_nodes():
+            mp = DEFAULT_RENDERED / node.name / "manifest.json"
+            cnp = DEFAULT_RENDERED / node.name / "client_nodes.json"
+            if mp.exists():
+                manifests.append(_json.loads(mp.read_text()))
+            if cnp.exists():
+                all_client_nodes.extend(_json.loads(cnp.read_text()))
+
+        if manifests:
+            sub_dir = DEFAULT_RENDERED / "subscription"
+            build_all_subscriptions(manifests, all_client_nodes, routing_rules, sub_dir)
+            typer.echo("  Subscriptions rebuilt")
+
+        from vvnext.health import check_fleet
+        report = check_fleet(inv, settings, detail=False)
+        typer.echo(f"  {report.summary()}")
+
+    # Summary
+    typer.echo(f"\nBatch complete: {len(added)} added, {len(add_failed)} failed")
+    if add_failed:
+        typer.echo(typer.style(f"  Failed: {', '.join(add_failed)}", fg=typer.colors.RED))
         raise typer.Exit(1)
 
 
@@ -844,3 +1582,51 @@ def keys_rotate(
 
     typer.echo(typer.style("Key materials rotated.", fg=typer.colors.GREEN))
     typer.echo("Remember to re-render configs and redeploy.")
+
+
+# ---------------------------------------------------------------------------
+# monitor
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def monitor(
+    once: bool = typer.Option(False, "--once", help="Collect once and exit"),
+    interval: int = typer.Option(300, "--interval", help="Collection interval in seconds"),
+    targets: Optional[list[str]] = typer.Argument(None, help="Node names (default: all)"),
+    inventory: Path = typer.Option(DEFAULT_INVENTORY, "--inventory", "-i"),
+    settings_path: Path = typer.Option(DEFAULT_SETTINGS, "--settings", "-s"),
+) -> None:
+    """Collect monitoring metrics from fleet nodes.
+
+    --once: single collection, print table and exit.
+    --interval N: collect every N seconds (default 300), push to InfluxDB if configured.
+    """
+    inv = _load_inventory_or_exit(inventory)
+    settings = _load_settings_or_exit(settings_path)
+
+    from vvnext.collector import collect_fleet, format_metrics_table, push_to_influxdb
+
+    import time as _time
+
+    target_list = list(targets) if targets else None
+
+    while True:
+        typer.echo(f"Collecting metrics ({_time.strftime('%H:%M:%S')})...")
+        metrics = collect_fleet(inv, settings, targets=target_list)
+        typer.echo(format_metrics_table(metrics))
+
+        # Push to InfluxDB if configured
+        influx = settings.monitoring.influxdb
+        if influx.enabled and influx.url:
+            ok = push_to_influxdb(metrics, settings)
+            if ok:
+                typer.echo(typer.style("  -> InfluxDB: OK", fg=typer.colors.GREEN))
+            else:
+                typer.echo(typer.style("  -> InfluxDB: FAILED", fg=typer.colors.RED))
+
+        if once:
+            break
+
+        typer.echo(f"\nNext collection in {interval}s...")
+        _time.sleep(interval)

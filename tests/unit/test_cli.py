@@ -229,12 +229,19 @@ def test_init_config_not_found(tmp_path):
 
 
 def test_init_with_config(tmp_path):
-    """Init with --config should run the 13-step pipeline skeleton."""
+    """Init with --config should parse nodes and start pipeline (fails at SSH)."""
     cfg = tmp_path / "init.yaml"
-    cfg.write_text(yaml.dump({"nodes": [{"ip": "10.0.0.1"}]}))
+    cfg.write_text(yaml.dump({
+        "nodes": [
+            {"ip": "10.0.0.1", "role": "near", "region": "hk", "provider": "gcp"},
+            {"ip": "10.0.0.2", "role": "far", "region": "us", "provider": "gcp"},
+        ],
+        "domain": "example.com",
+    }))
     result = runner.invoke(app, ["init", "--config", str(cfg)])
-    assert result.exit_code == 0
-    assert "Init complete" in result.stdout
+    # Pipeline starts successfully (step 1 passes) but fails at SSH step (step 2)
+    assert "Validate config" in result.stdout
+    assert "2 node(s) loaded" in result.stdout
 
 
 # ---------------------------------------------------------------------------

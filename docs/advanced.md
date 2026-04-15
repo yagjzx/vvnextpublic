@@ -40,7 +40,7 @@ Note the Tailscale IP:
 
 ```bash
 tailscale ip -4
-# 100.72.95.46
+# 100.100.100.100
 ```
 
 ### Step 2: Add to inventory
@@ -52,7 +52,7 @@ servers:
     region: us
     provider: home
     public_ip: "73.xxx.xxx.xxx"     # Home ISP public IP (for reference)
-    tailscale_ip: "100.72.95.46"    # Tailscale IP (used for SSH + WG)
+    tailscale_ip: "100.100.100.100"    # Tailscale IP (used for SSH + WG)
     ssh_target: tailscale           # SSH via Tailscale
     wg_port: 51943
     nat: true

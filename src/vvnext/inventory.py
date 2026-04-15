@@ -51,7 +51,7 @@ class ServerEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_role_fields(self) -> "ServerEntry":
-        if self.phase == "future":
+        if self.phase in ("future", "pending"):
             return self
         if self.role == "near":
             for f in ("sni", "port_base", "hy2_sni", "cdn_domain", "dns_name"):

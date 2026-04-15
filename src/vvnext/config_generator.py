@@ -5,6 +5,8 @@ and Clash-format client proxy entries.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from vvnext.inventory import Inventory, ServerEntry, Defaults, node_short_label
 
 
@@ -27,6 +29,24 @@ def build_near_config(
 
     # Collect WG peers for this near node
     peers = _get_ordered_peers(node, inventory, topo)
+
+    # --- Domain-based split routing ---
+    # Build mapping of exit type -> WG outbound tag for domain rules
+    peer_outbounds: dict[str, str] = {}
+    for far_name, _alloc in peers:
+        far_node = inventory.get_node(far_name)
+        tag = f"wg-{far_name}"
+        if far_node.role == "residential" and "residential" not in peer_outbounds:
+            peer_outbounds["residential"] = tag
+        elif far_node.role == "far" and "far" not in peer_outbounds:
+            peer_outbounds["far"] = tag
+        elif far_node.role == "near" and "near" not in peer_outbounds:
+            peer_outbounds["near"] = tag
+
+    routing_rules = _load_routing_rules()
+    if routing_rules:
+        domain_rules = _build_domain_route_rules(routing_rules, peer_outbounds)
+        route_rules.extend(domain_rules)
 
     # --- Overlay inbounds (port_base+1, +3, +4, +5, ...) ---
     overlay_inbound_tags: list[str] = []
@@ -535,6 +555,64 @@ def _build_dns() -> dict:
         ],
         "rules": [{"outbound": "any", "server": "local"}],
     }
+
+
+# ---------------------------------------------------------------------------
+# Internal: domain-based routing
+# ---------------------------------------------------------------------------
+
+def _load_routing_rules(config_dir: Path | None = None) -> dict:
+    """Load routing_rules.yaml if present. Returns empty dict if not found."""
+    if config_dir is None:
+        config_dir = Path("config")
+    rules_path = config_dir / "routing_rules.yaml"
+    if not rules_path.exists():
+        return {}
+    import yaml
+    return yaml.safe_load(rules_path.read_text()) or {}
+
+
+def _build_domain_route_rules(
+    routing_rules: dict,
+    peer_outbounds: dict[str, str],
+) -> list[dict]:
+    """Convert routing_rules into sing-box route rules.
+
+    Returns list of sing-box route rule dicts to insert before the
+    default per-inbound overlay rules.
+    """
+    rules: list[dict] = []
+    server_routing = routing_rules.get("server_routing", {})
+
+    for rule_name, rule_def in server_routing.items():
+        domains = rule_def.get("domains", [])
+        if not domains:
+            continue
+
+        action = rule_def.get("action", "")
+        if action == "direct":
+            rules.append({
+                "domain_suffix": domains,
+                "outbound": "direct",
+            })
+            continue
+
+        preferred = rule_def.get("preferred_exit", "far")
+        fallback = rule_def.get("fallback_exit", "")
+
+        # Map exit type to WG outbound tag
+        outbound = (
+            peer_outbounds.get(preferred)
+            or peer_outbounds.get(fallback)
+            or peer_outbounds.get("far")
+        )
+        if outbound:
+            rules.append({
+                "domain_suffix": domains,
+                "outbound": outbound,
+            })
+
+    return rules
 
 
 # ---------------------------------------------------------------------------

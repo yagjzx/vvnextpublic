@@ -35,7 +35,7 @@ servers:
     region: us
     provider: home
     public_ip: "9.10.11.12"
-    tailscale_ip: "100.72.95.46"  # Required for residential nodes
+    tailscale_ip: "100.100.100.100"  # Required for residential nodes
     ssh_target: tailscale          # SSH via Tailscale IP
     wg_port: 51943
     nat: true
